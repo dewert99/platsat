@@ -172,6 +172,7 @@ struct SolverV {
 }
 
 /// State used to store theory lemmas, propagations, etc.
+#[derive(Default)]
 struct TheoryState {
     lemma_lits: Vec<Lit>,
     lemma_offsets: Vec<(usize, usize)>, // slices in `lemma_lits`
@@ -745,16 +746,18 @@ impl<Cb: Callbacks> Solver<Cb> {
 
             let mut has_propagated = th_arg.has_propagated;
 
-            let mut lemmas = vec![];
-            for c in self.v.th_st.iter_lemmas() {
+            let mut th_st = mem::take(&mut self.v.th_st);
+            let mut buf = mem::take(&mut self.tmp_c_add_cl);
+            buf.clear();
+            for c in th_st.iter_lemmas() {
                 trace!("add theory lemma {}", c.pp_dimacs());
                 has_propagated = true;
-                lemmas.push(c.into());
+                buf.extend(c);
+                self.add_clause_during_search(th, &mut buf);
+                buf.clear();
             }
-            // now add lemmas
-            for mut c in lemmas {
-                self.add_clause_during_search(th, &mut c);
-            }
+            self.tmp_c_add_cl = buf;
+            self.v.th_st = th_st;
 
             if has_propagated {
                 self.v.th_st.clear(); // be sure to cleanup

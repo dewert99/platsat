@@ -759,7 +759,7 @@ impl<Cb: Callbacks> Solver<Cb> {
                 self.v.conflicts += 1;
                 self.handle_conflict(th, tmp_learnt, confl);
 
-                if let Conflict::BCP(_) = confl {
+                if self.v.opts.decay_on_theory_conflict || matches!(confl, Conflict::BCP(_)) {
                     self.v.vars.var_decay_activity(self.v.opts.var_decay);
                     self.v.cla_decay_activity();
                 }
@@ -2712,6 +2712,8 @@ impl Watcher {
 pub struct SolverOpts {
     pub var_decay: f32,
     pub clause_decay: f64,
+    /// Whether to decay for theory conflict or only for boolean conflict
+    pub decay_on_theory_conflict: bool,
     pub random_var_freq: f64,
     pub random_seed: f64,
     pub luby_restart: bool,
@@ -2743,6 +2745,7 @@ impl Default for SolverOpts {
         Self {
             var_decay: 0.95,
             clause_decay: 0.999,
+            decay_on_theory_conflict: false,
             random_var_freq: 0.0,
             random_seed: 91648253.0,
             ccmin_mode: 2,

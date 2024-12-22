@@ -134,7 +134,7 @@ struct SolverV {
     /// If `self.ok < self.assertion_level()`, the constraints are already unsatisfiable using the first `ok` assertion levels.
     /// No part of the solver state may be used!
     /// Otherwise, equal to u32::MAX
-    ok: u32,
+    ok: bool,
     /// Amount to bump next clause with.
     cla_inc: f64,
     // /// Amount to bump next variable with.
@@ -211,22 +211,6 @@ impl ExplainTheoryArg {
         }
     }
 
-    /// Returns a list of lits that are represent the assertion levels created by
-    /// [`SolverInterface::push_th`]
-    ///
-    /// The values returned will be `false` in the current model if `i` is less than the current
-    /// decision level
-    ///
-    /// A theory can use `assertion_level_lit(i)` in its explanation/conflict clause to indicate
-    /// that it depends on the `i`th assertion level (the first call to [`SolverInterface::push_th`]
-    /// creates assertion level 0), but the returned literal should never be negated
-    ///
-    /// If `i` is larger that than the number of assertion levels this function may panic or return
-    /// an arbitrary literal
-    pub fn assertion_level_lit(&self, i: u32) -> Lit {
-        !self.assumptions[i as usize]
-    }
-
     /// During [`Theory::partial_check`] (and `final_check`) after calling
     /// [`TheoryArg::raise_conflict`] returns mutable access to the conflict clause to allow
     /// modifications
@@ -284,11 +268,7 @@ impl<Cb: Callbacks> SolverInterface for Solver<Cb> {
 
     // in the API, we can only add clauses at level 0
     fn add_clause_reuse(&mut self, clause: &mut Vec<Lit>) -> bool {
-        debug!(
-            "add toplevel clause {:?} at assertion level {}",
-            clause,
-            self.v.assertion_level()
-        );
+        debug!("add toplevel clause {:?}", clause,);
 
         if !self.is_ok() {
             return false;
@@ -296,8 +276,8 @@ impl<Cb: Callbacks> SolverInterface for Solver<Cb> {
 
         debug_assert_eq!(
             self.v.decision_level(),
-            self.v.assertion_level(),
-            "add clause at decision level past assumptions"
+            0,
+            "add clause at decision level past 0"
         );
 
         clause.sort_unstable();
@@ -309,13 +289,9 @@ impl<Cb: Callbacks> SolverInterface for Solver<Cb> {
             let lit_i = clause[i];
             let value = self.v.value_lit(lit_i);
             let lvl = self.v.level_lit(lit_i);
-            if (value == lbool::TRUE && lvl as u32 <= self.v.assertion_level())
-                || lit_i == !last_lit
-            {
+            if (value == lbool::TRUE && lvl as u32 == 0) || lit_i == !last_lit {
                 return true; // tauto or satisfied already at a level less than or equal to the assertion level
-            } else if !(value == lbool::FALSE && lvl as u32 <= self.v.assertion_level())
-                && lit_i != last_lit
-            {
+            } else if !(value == lbool::FALSE && lvl as u32 == 0) && lit_i != last_lit {
                 // not a duplicate
                 last_lit = lit_i;
                 clause[j] = lit_i;
@@ -335,7 +311,7 @@ impl<Cb: Callbacks> SolverInterface for Solver<Cb> {
 
         if clause.len() == 0 {
             debug!("add toplevel clause []");
-            self.v.ok = self.v.assertion_level();
+            self.v.ok = false;
             return false;
         } else if clause.len() == 1 {
             let lit = clause.next().unwrap();
@@ -379,15 +355,14 @@ impl<Cb: Callbacks> SolverInterface for Solver<Cb> {
         th: &mut Th,
         assumps: &[Lit],
     ) -> lbool {
-        let old_len = self.v.assumptions().len();
         self.v.th_st.assumptions.extend_from_slice(assumps);
-        let res = self.solve_internal(th, old_len);
-        self.v.th_st.assumptions.truncate(old_len);
+        let res = self.solve_internal(th);
+        self.v.th_st.assumptions.clear();
         res
     }
 
     fn pop_model<Th: Theory>(&mut self, th: &mut Th) {
-        self.cancel_until(th, self.v.assertion_level())
+        self.cancel_until(th, 0)
     }
 
     fn raw_value_lit(&self, l: Lit) -> lbool {
@@ -403,17 +378,17 @@ impl<Cb: Callbacks> SolverInterface for Solver<Cb> {
         if !self.is_ok() {
             return false;
         }
-        debug_assert_eq!(self.v.decision_level(), self.v.assertion_level());
+        debug_assert_eq!(self.v.decision_level(), 0);
         match self.propagate_th(th) {
             Some(_) => {
-                self.v.ok = self.v.decision_level();
+                self.v.ok = false;
                 false
             }
             None => true,
         }
     }
     fn is_ok(&self) -> bool {
-        self.v.ok > self.v.assertion_level()
+        self.v.ok
     }
 
     fn num_vars(&self) -> u32 {
@@ -494,78 +469,11 @@ impl<Cb: Callbacks> SolverInterface for Solver<Cb> {
         self.v.set_decision_var(v, dvar)
     }
 
-    fn push_th<Th: Theory>(&mut self, th: &mut Th) {
-        if self.simplify_th(th) {
-            let lit = Lit::new(self.new_var(lbool::UNDEF, false), true);
-            self.v.th_st.assumptions.push(lit);
-            self.new_decision_level(th);
-            self.v.vars.unchecked_enqueue(lit, CRef::UNDEF);
-        } else {
-            let lit = Lit::new(self.new_var(lbool::UNDEF, false), true);
-            self.v.th_st.assumptions.push(lit);
-        }
-        self.clauses.push(CRef::UNDEF)
-    }
-
-    fn pop_n_th<Th: Theory>(&mut self, th: &mut Th, n: u32) {
-        if self.is_ok() {
-            debug_assert_eq!(self.v.decision_level(), self.v.assertion_level())
-        }
-        let new_len = self.v.assertion_level() - n;
-        if self.v.ok > new_len {
-            self.v.ok = u32::MAX;
-        }
-        self.cancel_until(th, new_len);
-        let bound_lit = self.v.assumptions()[new_len as usize];
-        trace!("All literals after {bound_lit:?} should have been removed from the theory");
-        self.v.th_st.assumptions.truncate(new_len as usize);
-        debug_assert!(bound_lit < !bound_lit);
-        let mut i = self.clauses.len();
-        let mut levels_passed = 0;
-        while levels_passed < n {
-            i -= 1;
-            if self.clauses[i] == CRef::UNDEF {
-                levels_passed += 1;
-            }
-        }
-        // All clauses before `i` were created at an earlier assertion level so they must not
-        // contain any of the literals we are deleting
-        let mut j = i;
-        while i < self.clauses.len() {
-            let cr = self.clauses[i];
-            i += 1;
-            if cr == CRef::UNDEF {
-                continue;
-            }
-            let cref = self.v.ca.get_ref(cr);
-            if cref.lits().iter().all(|l| *l < bound_lit) {
-                // this clause also doesn't contain any of the literals we are deleting so we can keep it
-                self.clauses[j] = cr;
-                j += 1;
-            } else {
-                if cref.learnt() {
-                    self.learnt -= 1;
-                }
-                self.v.remove_clause(cr);
-            }
-        }
-        self.clauses.truncate(j);
-        let sentinel_lit = !bound_lit;
-        for l in self.v.vars.trail.iter_mut() {
-            if *l >= bound_lit {
-                // Replace any of the literals we are replacing with a sentinel value
-                // to make sure the trail length stays the same
-                *l = sentinel_lit;
-            }
-        }
-        self.v.next_var = Var::from_idx(sentinel_lit.var().idx() + 1);
-    }
-
     fn with_theory_arg(&mut self, f: impl FnOnce(&mut TheoryArg)) {
         if !self.is_ok() {
             return;
         }
-        debug_assert_eq!(self.v.decision_level(), self.v.assertion_level());
+        debug_assert_eq!(self.v.decision_level(), 0);
         let mut th_arg = {
             TheoryArg {
                 v: &mut self.v,
@@ -575,11 +483,11 @@ impl<Cb: Callbacks> SolverInterface for Solver<Cb> {
         };
         f(&mut th_arg);
         if let TheoryConflict::Clause { .. } = th_arg.conflict {
-            self.v.ok = self.v.decision_level();
+            self.v.ok = false;
             return;
         } else if let TheoryConflict::Prop(_p) = th_arg.conflict {
             debug!("inconsistent theory propagation {:?}", _p);
-            self.v.ok = self.v.decision_level();
+            self.v.ok = false;
             return;
         } else {
             debug_assert!(matches!(th_arg.conflict, TheoryConflict::Nil));
@@ -606,11 +514,18 @@ pub struct CheckPoint {
     trail_len: u32,
     clause_num: u32,
     next_var: Var,
-    ok: u32,
+    ok: bool,
+}
+
+impl CheckPoint {
+    pub fn trail_len(&self) -> u32 {
+        self.trail_len
+    }
 }
 
 impl<Cb: Callbacks> Solver<Cb> {
     pub fn checkpoint(&self) -> CheckPoint {
+        debug_assert!(!self.is_ok() || self.v.decision_level() == 0);
         CheckPoint {
             trail_len: self.v.vars.trail.len() as u32,
             clause_num: self.clauses.len() as u32,
@@ -620,12 +535,26 @@ impl<Cb: Callbacks> Solver<Cb> {
     }
 
     pub fn restore_checkpoint(&mut self, check_point: CheckPoint) {
-        for v in self.v.vars.trail.drain(check_point.trail_len as usize..) {
-            self.v.vars.ass[v.var()] = lbool::UNDEF;
-            self.v.vars.vardata[v.var()] = VarData::default();
+        debug_assert!(!self.is_ok() || self.v.decision_level() == 0);
+        for i in check_point.trail_len as usize..self.v.vars.trail.len() {
+            let v = self.v.vars.trail[i].var();
+            if v < check_point.next_var {
+                self.v.vars.ass[v] = lbool::UNDEF;
+                self.v.vars.vardata[v] = VarData::default();
+                self.v.insert_var_order(v);
+            }
         }
+        self.v.vars.trail.truncate(check_point.trail_len as usize);
+        self.v.qhead = check_point.trail_len as i32;
 
-        for cr in self.clauses.drain(check_point.clause_num as usize..) {
+        for cr in self
+            .clauses
+            .drain(check_point.clause_num as usize..)
+            .filter(|cr| *cr != CRef::UNDEF)
+        {
+            if self.v.ca.get_ref(cr).learnt() {
+                self.learnt -= 1;
+            }
             self.v.remove_clause(cr);
         }
 
@@ -691,7 +620,7 @@ impl<Cb: Callbacks> Solver<Cb> {
     }
 
     fn simplify_internal(&mut self) {
-        debug_assert!(self.v.decision_level() <= self.v.assertion_level());
+        debug_assert_eq!(self.v.decision_level(), 0);
 
         if !self.is_ok() {
             return;
@@ -794,7 +723,7 @@ impl<Cb: Callbacks> Solver<Cb> {
                 if self.v.conflicts > conflict_threshold || !self.within_budget() {
                     // Reached bound on number of conflicts:
                     self.v.progress_estimate = self.v.progress_estimate();
-                    self.cancel_until(th, self.v.assertion_level());
+                    self.cancel_until(th, 0);
                     return lbool::UNDEF;
                 }
 
@@ -890,7 +819,7 @@ impl<Cb: Callbacks> Solver<Cb> {
             // directly propagate the unit clause at level 0
             self.v.vars.unchecked_enqueue(learnt.clause[0], CRef::UNDEF);
         } else if learnt.clause.is_empty() {
-            self.v.ok = 0;
+            self.v.ok = false;
         } else {
             // propagate the lit, justified by `cr`
             let cr = self
@@ -977,8 +906,8 @@ impl<Cb: Callbacks> Solver<Cb> {
 
     /// Main solve method (assumptions given in `self.assumptions`).
     #[inline(always)]
-    fn solve_internal<Th: Theory>(&mut self, th: &mut Th, assertion_level: usize) -> lbool {
-        assert!(self.v.decision_level() <= self.v.assertion_level());
+    fn solve_internal<Th: Theory>(&mut self, th: &mut Th) -> lbool {
+        assert_eq!(self.v.decision_level(), 0);
         self.conflict = Lit::UNDEF;
         if !self.is_ok() {
             return lbool::FALSE;
@@ -1029,10 +958,7 @@ impl<Cb: Callbacks> Solver<Cb> {
                 // NOTE: we may return `false` without an empty conflict in case we had assumptions. In
                 // this case `self.conflict` contains the unsat-core but adding new clauses might
                 // succeed in the absence of these assumptions.
-                self.v.ok = 0;
-            } else if self.v.decision_level() < assertion_level as u32 {
-                // assumptions above the decision level are conflicting
-                self.v.ok = self.v.decision_level() + 1;
+                self.v.ok = false;
             }
         }
 
@@ -1075,25 +1001,18 @@ impl<Cb: Callbacks> Solver<Cb> {
         debug!("reduce_db.start");
         // Don't delete binary or locked clauses. From the rest, delete clauses from the first half
         // and clauses with activity smaller than `extra_lim`:
-        let mut j = 0;
-        for i in 0..self.clauses.len() {
-            let cr = self.clauses[i];
-            let cond = cr != CRef::UNDEF && {
-                let c = self.v.ca.get_ref(cr);
-                c.learnt() && c.size() > 2 && !self.v.locked(c) && c.activity() < lim
-            };
-            if cond {
-                self.v.remove_clause(cr);
-                self.cb.on_delete_clause(self.v.ca.get_ref(cr).lits());
-            } else {
-                self.clauses[j] = cr;
-                j += 1;
+        let mut deleted = 0;
+        for clause in &mut self.clauses {
+            if *clause != CRef::UNDEF {
+                let c = self.v.ca.get_ref(*clause);
+                if c.learnt() && c.size() > 2 && !self.v.locked(c) && c.activity() < lim {
+                    self.cb.on_delete_clause(c.lits());
+                    self.v.remove_clause(*clause);
+                    *clause = CRef::UNDEF;
+                    deleted += 1;
+                }
             }
         }
-
-        // self.learnts.resize_default(j);
-        let deleted = self.clauses.len() - j;
-        self.clauses.truncate(j);
         self.learnt -= deleted as u32;
 
         debug!("reduce_db.done (deleted {})", deleted);
@@ -1211,7 +1130,7 @@ impl<Cb: Callbacks> Solver<Cb> {
     /// Add clause during search
     fn add_clause_during_search<Th: Theory>(&mut self, th: &mut Th, clause: &mut Vec<Lit>) -> bool {
         debug!("add internal clause {:?}", clause);
-        if self.v.ok == 0 {
+        if !self.v.ok {
             return false;
         }
 
@@ -1237,7 +1156,7 @@ impl<Cb: Callbacks> Solver<Cb> {
         clause.resize(j, Lit::UNDEF);
 
         if clause.is_empty() {
-            self.v.ok = 0;
+            self.v.ok = false;
             return false;
         } else if clause.len() == 1 {
             self.cancel_until(th, 0); // only at level 0
@@ -1336,11 +1255,6 @@ impl SolverV {
     #[inline(always)]
     pub fn assumptions(&self) -> &[Lit] {
         &self.th_st.assumptions
-    }
-
-    #[inline(always)]
-    fn assertion_level(&self) -> u32 {
-        self.assumptions().len() as u32
     }
 
     fn order_heap(&mut self) -> Heap<Var, VarOrder> {
@@ -2214,7 +2128,7 @@ impl SolverV {
             decision: VMapBool::default(),
             // v.vardata: VMap::new(),
             watches_data: OccListsData::new(),
-            ok: u32::MAX,
+            ok: true,
             cla_inc: 1.0,
             // v.var_inc: 1.0,
             qhead: 0,

@@ -268,8 +268,6 @@ impl<Cb: Callbacks> SolverInterface for Solver<Cb> {
 
     // in the API, we can only add clauses at level 0
     fn add_clause_reuse(&mut self, clause: &mut Vec<Lit>) -> bool {
-        debug!("add toplevel clause {:?}", clause,);
-
         if !self.is_ok() {
             return false;
         }
@@ -1025,14 +1023,14 @@ impl<Cb: Callbacks> Solver<Cb> {
         assert_eq!(self.v.decision_level(), 0);
         let cs = &mut self.clauses;
         let self_v = &mut self.v;
-        cs.retain(|&cr| {
-            if cr == CRef::UNDEF {
-                return true;
+        cs.iter_mut().for_each(|cr| {
+            if *cr == CRef::UNDEF {
+                return;
             }
-            let cr_ref = self_v.ca.get_ref(cr);
+            let cr_ref = self_v.ca.get_ref(*cr);
             // TODO investigate why this causes slow down (is garbage_frac to low)
             if !cr_ref.learnt() {
-                return true;
+                return;
             }
             let satisfied = self_v.satisfied(cr_ref);
             if satisfied {
@@ -1040,34 +1038,10 @@ impl<Cb: Callbacks> Solver<Cb> {
                     self.learnt -= 1;
                 }
                 debug!("remove satisfied clause {:?}", cr_ref.lits());
-                self_v.remove_clause(cr);
-            // we should not need to tell the proof checker to remove the clause
-            } else {
-                let amount_shaved = {
-                    let mut c = self_v.ca.get_mut(cr);
-                    // Trim clause (but keep the 2 first lits as they are watching):
-                    debug_assert_eq!(self_v.vars.value_lit(c[0]), lbool::UNDEF);
-                    debug_assert_eq!(self_v.vars.value_lit(c[1]), lbool::UNDEF);
-                    let mut k = 2;
-                    let orig_size = c.size();
-                    let mut end = c.size();
-                    while k < end {
-                        if self_v.vars.value_lit(c[k]) == lbool::FALSE {
-                            // this lit is false at level 0, remove it from `c`
-                            debug_assert!(self_v.vars.level(c[k].var()) == 0);
-                            end -= 1;
-                            c[k] = c[end];
-                        } else {
-                            k += 1;
-                        }
-                    }
-                    c.shrink(end);
-                    orig_size - end
-                };
-                // It was not in MiniSAT, but it is needed for correct wasted calculation.
-                self_v.ca.free_amount(amount_shaved);
+                self_v.remove_clause(*cr);
+                *cr = CRef::UNDEF;
+                // we should not need to tell the proof checker to remove the clause
             }
-            !satisfied
         });
     }
 

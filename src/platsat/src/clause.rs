@@ -476,16 +476,6 @@ impl<'a> ClauseMut<'a> {
         self.set_reloced(true);
         *self.data[0].cref_mut() = c;
     }
-    pub fn shrink(self, new_size: u32) {
-        debug_assert!(2 <= new_size);
-        debug_assert!(new_size <= self.size());
-        if new_size < self.size() {
-            self.header.set_size(new_size);
-            if let Some(extra) = self.extra {
-                self.data[new_size as usize] = *extra;
-            }
-        }
-    }
     pub fn as_clause_ref(&mut self) -> ClauseRef {
         ClauseRef {
             header: *self.header,

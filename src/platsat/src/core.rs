@@ -1146,6 +1146,7 @@ impl<Cb: Callbacks> Solver<Cb> {
 }
 
 /// Theory-triggered conflict.
+#[derive(Copy, Clone)]
 enum TheoryConflict {
     Nil,
     Clause { costly: bool },
@@ -2405,6 +2406,14 @@ impl<'a> TheoryArg<'a> {
     pub fn make_conflict_costly(&mut self) {
         debug_assert!(matches!(self.conflict, TheoryConflict::Clause { .. }));
         self.conflict = TheoryConflict::Clause { costly: true };
+    }
+
+    pub fn reborrow(&mut self) -> TheoryArg {
+        TheoryArg {
+            v: &mut *self.v,
+            has_propagated: self.has_propagated,
+            conflict: self.conflict,
+        }
     }
 }
 

@@ -169,6 +169,8 @@ struct SolverV {
     propagation_budget: i64,
 
     th_st: ExplainTheoryArg,
+    has_propagated: bool,
+    conflict: TheoryConflict,
 }
 
 /// Enables adding lemmas during explanations
@@ -472,23 +474,19 @@ impl<Cb: Callbacks> SolverInterface for Solver<Cb> {
             return;
         }
         debug_assert_eq!(self.v.decision_level(), 0);
-        let mut th_arg = {
-            TheoryArg {
-                v: &mut self.v,
-                has_propagated: false,
-                conflict: TheoryConflict::Nil,
-            }
-        };
+        self.v.conflict = TheoryConflict::Nil;
+        self.v.has_propagated = false;
+        let mut th_arg = { TheoryArg { v: &mut self.v } };
         f(&mut th_arg);
-        if let TheoryConflict::Clause { .. } = th_arg.conflict {
+        if let TheoryConflict::Clause { .. } = self.v.conflict {
             self.v.ok = false;
             return;
-        } else if let TheoryConflict::Prop(_p) = th_arg.conflict {
+        } else if let TheoryConflict::Prop(_p) = self.v.conflict {
             debug!("inconsistent theory propagation {:?}", _p);
             self.v.ok = false;
             return;
         } else {
-            debug_assert!(matches!(th_arg.conflict, TheoryConflict::Nil));
+            debug_assert!(matches!(self.v.conflict, TheoryConflict::Nil));
 
             if self.v.th_st.num_lemmas() > 0 {
                 let mut th_st = mem::take(&mut self.v.th_st);
@@ -858,21 +856,15 @@ impl<Cb: Callbacks> Solver<Cb> {
         &mut self,
         th: &mut Th,
     ) -> Result<bool, Conflict> {
-        let mut th_arg = {
-            TheoryArg {
-                v: &mut self.v,
-                has_propagated: false,
-                conflict: TheoryConflict::Nil,
-            }
-        };
+        self.v.has_propagated = false;
+        self.v.conflict = TheoryConflict::Nil;
+        let mut th_arg = { TheoryArg { v: &mut self.v } };
         // call theory
         match FINAL {
             false => th.partial_check(&mut th_arg),
             true => th.final_check(&mut th_arg),
         }
-        if let TheoryConflict::Clause { costly } = th_arg.conflict {
-            // borrow magic
-
+        if let TheoryConflict::Clause { costly } = self.v.conflict {
             debug!(
                 "theory conflict {:?} (costly: {})",
                 &self.v.th_st.tmp_c_th, costly
@@ -880,14 +872,14 @@ impl<Cb: Callbacks> Solver<Cb> {
             self.v.vars.sort_clause_lits(&mut self.v.th_st.tmp_c_th); // as if it were a normal clause
             self.v.th_st.tmp_c_th.dedup();
             Err(Conflict::ThLemma { add: costly })
-        } else if let TheoryConflict::Prop(p) = th_arg.conflict {
+        } else if let TheoryConflict::Prop(p) = self.v.conflict {
             // conflict: propagation of a lit known to be false
             debug!("inconsistent theory propagation {:?}", p);
             Err(Conflict::ThProp(p))
         } else {
-            debug_assert!(matches!(th_arg.conflict, TheoryConflict::Nil));
+            debug_assert!(matches!(self.v.conflict, TheoryConflict::Nil));
 
-            let mut has_propagated = th_arg.has_propagated;
+            let mut has_propagated = self.v.has_propagated;
 
             if self.v.th_st.num_lemmas() > 0 {
                 self.flush_th_lemmas(th);
@@ -1161,8 +1153,6 @@ enum TheoryConflict {
 /// add lemmas, and propagate literals.
 pub struct TheoryArg<'a> {
     v: &'a mut SolverV,
-    has_propagated: bool,
-    conflict: TheoryConflict,
 }
 
 /// Temporary representation of a learnt clause, produced in `analyze`.
@@ -2126,6 +2116,8 @@ impl SolverV {
             propagation_budget: -1,
 
             th_st: ExplainTheoryArg::default(),
+            conflict: TheoryConflict::Nil,
+            has_propagated: false,
         }
     }
 }
@@ -2308,7 +2300,7 @@ impl<'a> TheoryArg<'a> {
     /// `is_ok() == false` means UNSAT was found.
     #[inline]
     pub fn is_ok(&self) -> bool {
-        match self.conflict {
+        match self.v.conflict {
             TheoryConflict::Nil => true,
             TheoryConflict::Prop(_) | TheoryConflict::Clause { .. } => false,
         }
@@ -2367,14 +2359,14 @@ impl<'a> TheoryArg<'a> {
             true
         } else if v_p == lbool::UNDEF {
             // propagate on the fly
-            self.has_propagated = true;
+            self.v.has_propagated = true;
             let cr = CRef::SPECIAL; // indicates a theory propagation
             self.v.vars.unchecked_enqueue(p, cr);
             true
         } else {
             assert_eq!(v_p, lbool::FALSE);
             // conflict
-            self.conflict = TheoryConflict::Prop(p);
+            self.v.conflict = TheoryConflict::Prop(p);
             false
         }
     }
@@ -2394,7 +2386,7 @@ impl<'a> TheoryArg<'a> {
     ///     to `c` along with the actual learnt clause.
     pub fn raise_conflict(&mut self, lits: &[Lit], costly: bool) {
         if self.is_ok() {
-            self.conflict = TheoryConflict::Clause { costly };
+            self.v.conflict = TheoryConflict::Clause { costly };
             self.v.th_st.tmp_c_th.clear();
             self.v.th_st.tmp_c_th.extend_from_slice(lits);
         }
@@ -2404,16 +2396,12 @@ impl<'a> TheoryArg<'a> {
     ///
     /// Marks the previously added conflict as costly
     pub fn make_conflict_costly(&mut self) {
-        debug_assert!(matches!(self.conflict, TheoryConflict::Clause { .. }));
-        self.conflict = TheoryConflict::Clause { costly: true };
+        debug_assert!(matches!(self.v.conflict, TheoryConflict::Clause { .. }));
+        self.v.conflict = TheoryConflict::Clause { costly: true };
     }
 
     pub fn reborrow(&mut self) -> TheoryArg {
-        TheoryArg {
-            v: &mut *self.v,
-            has_propagated: self.has_propagated,
-            conflict: self.conflict,
-        }
+        TheoryArg { v: &mut *self.v }
     }
 }
 

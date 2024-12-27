@@ -473,7 +473,6 @@ impl<Cb: Callbacks> SolverInterface for Solver<Cb> {
         if !self.is_ok() {
             return;
         }
-        debug_assert_eq!(self.v.decision_level(), 0);
         self.v.conflict = TheoryConflict::Nil;
         self.v.has_propagated = false;
         let mut th_arg = { TheoryArg { v: &mut self.v } };
@@ -1253,6 +1252,9 @@ impl SolverV {
         if new_activity > 1e20 {
             // Rescale:
             for &learnt in clauses.iter() {
+                if learnt == CRef::UNDEF {
+                    continue;
+                }
                 let mut c = self.ca.get_mut(learnt);
                 if c.as_clause_ref().learnt() {
                     let r = c.activity() * 1e-20;

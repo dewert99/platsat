@@ -491,7 +491,7 @@ impl<Cb: Callbacks> SolverInterface for Solver<Cb> {
                 let mut th_st = mem::take(&mut self.v.th_st);
                 let mut c = mem::take(&mut th_st.tmp_c_th);
                 for lemma in th_st.iter_lemmas() {
-                    debug!("add theory lemma {}", lemma.pp_dimacs());
+                    trace!("add theory lemma {}", lemma.pp_dimacs());
                     c.clear();
                     c.extend_from_slice(lemma);
                     self.add_clause_reuse(&mut c);
@@ -836,7 +836,7 @@ impl<Cb: Callbacks> Solver<Cb> {
         let mut th_st = mem::take(&mut self.v.th_st);
         let mut c = mem::take(&mut th_st.tmp_c_th);
         for lemma in th_st.iter_lemmas() {
-            debug!("add theory lemma {}", lemma.pp_dimacs());
+            trace!("add theory lemma {}", lemma.pp_dimacs());
             c.clear();
             c.extend_from_slice(lemma);
             self.add_clause_during_search(th, &mut c);
@@ -2321,9 +2321,30 @@ impl<'a> TheoryArg<'a> {
     }
 
     /// Allocate a new literal.
+    ///
+    /// ## Deprecated
+    /// Use `Lit::new(self.`[`new_var`](TheoryArg::new_var)`(lbool::FALSE, true))` to replicate the
+    /// previous behaviour
+    ///
+    /// Use `Lit::new(self.`[`new_var_default`](TheoryArg::new_var_default)`())` to replicate the
+    /// behaviour of [`SolverInterface::new_var_default`]
+    #[deprecated]
     pub fn mk_new_lit(&mut self) -> Lit {
         let v = self.v.new_var(lbool::FALSE, true);
         Lit::new(v, true)
+    }
+
+    /// Creates a new SAT variable in the solver. If 'decision' is cleared, variable will not be
+    /// used as a decision variable (NOTE! This has effects on the meaning of a SATISFIABLE result).
+    pub fn new_var(&mut self, upol: lbool, decision: bool) -> Var {
+        self.v.new_var(upol, decision)
+    }
+
+    /// Create a new variable with the default polarity.
+    ///
+    /// The default polarity is not specified.
+    pub fn new_var_default(&mut self) -> Var {
+        self.v.new_var(lbool::UNDEF, true)
     }
 
     /// Push a theory lemma into the solver.

@@ -18,6 +18,7 @@ DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
 OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 **************************************************************************************************/
 use bytemuck::{Pod, Zeroable};
+use core::hash::{Hash, Hasher};
 use no_std_compat::prelude::v1::*;
 use std::cmp;
 use std::fmt;
@@ -81,6 +82,12 @@ impl<T: Copy> ops::IndexMut<Ref<T>> for RegionAllocator<T> {
 ///
 /// The reference is invariant in `T`.
 pub struct Ref<T: Copy>(u32, PhantomData<fn(T) -> T>);
+
+impl<T: Copy> Hash for Ref<T> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.hash(state)
+    }
+}
 
 impl<T: Copy> fmt::Debug for Ref<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {

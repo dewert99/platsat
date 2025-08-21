@@ -1,6 +1,9 @@
 use std::iter::Chain;
 
-pub(crate) struct ExactSizedChain<I1, I2>(pub Chain<I1, I2>);
+/// Force a [`Chain`] to implement [`ExactSizeIterator`]
+///
+/// Helpful for calling [`crate::Solver::add_clause_unchecked`]
+pub struct ExactSizedChain<I1, I2>(pub Chain<I1, I2>);
 
 impl<I1: Iterator, I2: Iterator<Item = I1::Item>> Iterator for ExactSizedChain<I1, I2> {
     type Item = I1::Item;

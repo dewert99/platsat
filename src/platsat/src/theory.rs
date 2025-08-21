@@ -1,8 +1,10 @@
-use {crate::clause::Lit, std::default::Default};
-
+use crate::clause::CRef;
 use crate::core::ExplainTheoryArg;
 /// Argument passed to the Theory
 pub use crate::core::TheoryArg;
+use bytemuck::{must_cast, Pod, Zeroable};
+use core::fmt::{Debug, Formatter};
+use {crate::clause::Lit, std::default::Default};
 
 /// Theory that parametrizes the solver and can react on events.
 pub trait Theory {
@@ -65,6 +67,41 @@ pub trait Theory {
     ) -> &'a [Lit] {
         self.explain_propagation_clause(p, st)
     }
+
+    /// Called when new clauses are discovered, either is learned by CDCL, or a unit clause that
+    /// is propagated.
+    fn on_new_clause(&mut self, _clause: &[Lit]) {}
+
+    /// Called when garbage collection is started to prepare for a sequence of calls to [`Self::on_realloc`]
+    fn on_start_gc(&mut self) {}
+
+    /// Called when reallocing a [`CRef`]
+    fn on_realloc(&mut self, _old: ClauseRef, _new: ClauseRef) {}
+
+    /// Called in from [`Solver::unsat_core`] as unsat core is generated
+    fn on_final_lit_explanation(&mut self, _lit: Lit, _reason: ClauseRef) {}
+}
+
+#[derive(Hash, Eq, PartialEq, Pod, Zeroable, Copy, Clone)]
+#[repr(transparent)]
+pub struct ClauseRef(pub(crate) CRef);
+
+impl Debug for ClauseRef {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        if *self == ClauseRef::UNDEF {
+            write!(f, "crUNDEF")
+        } else if *self == ClauseRef::SPECIAL {
+            write!(f, "crSPECIAL")
+        } else {
+            let u32_val: u32 = must_cast(*self);
+            write!(f, "cr{u32_val}")
+        }
+    }
+}
+
+impl ClauseRef {
+    pub const UNDEF: ClauseRef = ClauseRef(CRef::UNDEF);
+    pub const SPECIAL: ClauseRef = ClauseRef(CRef::SPECIAL);
 }
 
 /// Trivial theory that does nothing

@@ -18,7 +18,9 @@ NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FO
 DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT
 OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 **************************************************************************************************/
-use bytemuck::{must_cast, must_cast_mut, must_cast_ref, must_cast_slice, Pod, Zeroable};
+use bytemuck::{
+    must_cast, must_cast_mut, must_cast_ref, must_cast_slice, must_cast_slice_mut, Pod, Zeroable,
+};
 use default_vec2::ConstDefault;
 use no_std_compat::prelude::v1::*;
 use {
@@ -476,12 +478,27 @@ impl<'a> ClauseMut<'a> {
         self.set_reloced(true);
         *self.data[0].cref_mut() = c;
     }
+    pub fn shrink(self, new_size: u32) {
+        debug_assert!(2 <= new_size);
+        debug_assert!(new_size <= self.size());
+        if new_size < self.size() {
+            self.header.set_size(new_size);
+            if let Some(extra) = self.extra {
+                self.data[new_size as usize] = *extra;
+            }
+        }
+    }
+
     pub fn as_clause_ref(&mut self) -> ClauseRef {
         ClauseRef {
             header: *self.header,
             data: self.data,
             extra: self.extra.as_mut().map(|extra| **extra),
         }
+    }
+
+    pub fn lits(&mut self) -> &mut [Lit] {
+        must_cast_slice_mut(&mut self.data)
     }
 }
 

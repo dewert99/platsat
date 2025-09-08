@@ -608,8 +608,14 @@ impl<Cb: Callbacks> Solver<Cb> {
             }
         }
         match &clause_buf[..j] {
-            &[] => self.v.ok = Some(Conflict::BCP(cr)),
+            &[] => {
+                self.v.num_clauses += 1;
+                self.v.clauses_literals += clause_buf.len() as u64;
+                self.v.ok = Some(Conflict::BCP(cr))
+            }
             &[lit] => {
+                self.v.num_clauses += 1;
+                self.v.clauses_literals += clause_buf.len() as u64;
                 self.v.vars.unchecked_enqueue(lit, cr);
                 let mut clause = self.v.ca.get_mut(cr);
                 let clause = clause.lits();

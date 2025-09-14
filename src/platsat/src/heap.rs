@@ -188,36 +188,49 @@ impl<'a, K: AsIndex + 'a, Comp: CachedKeyComparator<K>> Heap<'a, K, Comp> {
     }
 
     pub fn decrease(&mut self, k: K) {
-        debug_assert!(self.in_heap(k));
         let k_index = self.indices[k];
-        self.heap[k_index.idx()] = self.comp.cache_key(k);
-        self.percolate_up(k_index.0 as u32);
+        if k_index.0 >= 0 {
+            self.heap[k_index.idx()] = self.comp.cache_key(k);
+            self.percolate_up(k_index.0 as u32);
+        }
+    }
+
+    pub(crate) fn remove(&mut self, k: K) {
+        let k_index = self.indices[k];
+        if k_index.0 >= 0 {
+            self.remove_helper(k, k_index.0 as u32)
+        }
+    }
+
+    fn remove_helper(&mut self, k: K, k_index: u32) {
+        let last = self.next_slot - 1;
+        self.next_slot = last;
+        self.indices[k] = HeapIndex::default();
+        if self.next_slot <= k_index as usize {
+            self.heap[last] = self.comp.max_key();
+            return;
+        }
+        let lastval = self.heap[last];
+        self.heap[last] = self.comp.max_key();
+        self.heap[k_index as usize] = lastval;
+        self.data.indices[self.comp.un_cache_key(lastval)] = HeapIndex(k_index as i32);
+        self.percolate_down(k_index);
     }
 
     pub fn insert(&mut self, k: K) {
-        debug_assert!(!self.in_heap(k));
-        let k_index = self.heap_push(self.comp.cache_key(k));
-        self.indices[k] = HeapIndex(k_index as i32);
-        self.percolate_up(k_index);
+        if !self.in_heap(k) {
+            let k_index = self.heap_push(self.comp.cache_key(k));
+            self.indices[k] = HeapIndex(k_index as i32);
+            self.percolate_up(k_index);
+        }
     }
 
     pub fn remove_min(&mut self) -> K {
         assert!(!self.is_empty(), "cannot pop from empty heap");
         let x = self.heap[ROOT as usize];
-        let last = self.next_slot - 1;
-        self.next_slot = last;
         let x_var = self.comp.un_cache_key(x);
-        self.indices[x_var] = HeapIndex::default();
-        if self.is_empty() {
-            self.heap[last] = self.comp.max_key();
-            return x_var;
-        }
-        let lastval = self.heap[last];
-        self.heap[last] = self.comp.max_key();
-        self.heap[ROOT as usize] = lastval;
-        self.data.indices[self.comp.un_cache_key(lastval)] = HeapIndex(ROOT as i32);
-        self.percolate_down(ROOT);
-        self.comp.un_cache_key(x)
+        self.remove_helper(x_var, ROOT);
+        x_var
     }
 }
 

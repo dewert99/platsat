@@ -20,6 +20,7 @@ OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWA
 **************************************************************************************************/
 use bytemuck::cast_vec;
 use core::convert::Infallible;
+use core::fmt::{Debug, Formatter};
 use core::ops::ControlFlow;
 use default_vec2::ConstDefault;
 use internal_iterator::InternalIterator;
@@ -533,6 +534,12 @@ impl<Cb: Callbacks> Solver<Cb> {
             self.v.remove_clause(cr);
         }
 
+        for v in (check_point.next_var.idx()..self.v.next_var.idx())
+            .into_iter()
+            .map(Var::from_idx)
+        {
+            self.v.order_heap().remove(v)
+        }
         self.v.next_var = check_point.next_var;
         self.v.ok = (!check_point.ok).then_some(Conflict::BCP(CRef::UNDEF));
     }
@@ -1348,7 +1355,7 @@ impl SolverV {
     }
 
     fn insert_var_order(&mut self, x: Var) {
-        if !self.order_heap().in_heap(x) && self.decision.contains_mut(x) {
+        if self.decision.contains_mut(x) {
             self.order_heap().insert(x);
         }
     }
@@ -2403,9 +2410,7 @@ impl VarState {
 
         // Update order_heap with respect to new activity:
         let mut order_heap = self.order_heap();
-        if order_heap.in_heap(v) {
-            order_heap.decrease(v);
-        }
+        order_heap.decrease(v);
     }
 
     #[allow(dead_code)]
@@ -2644,6 +2649,7 @@ struct Watcher {
     blocker: Lit,
 }
 
+#[derive(Debug)]
 struct VarOrder<'a> {
     activity: &'a VMap<f32>,
 }
@@ -2767,6 +2773,18 @@ impl VarOrderKey {
         *self = VarOrderKey::new(self.var(), f(self.activity()))
     }
 }
+
+impl Debug for VarOrderKey {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
+        let var = if self.0 as u32 >= u32::MAX / 2 {
+            Var::UNDEF
+        } else {
+            self.var()
+        };
+        write!(f, "{:?}:{}", var, self.activity())
+    }
+}
+
 impl<'a> CachedKeyComparator<Var> for VarOrder<'a> {
     type Key = VarOrderKey;
 

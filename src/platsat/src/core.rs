@@ -485,7 +485,7 @@ impl<Cb: Callbacks> SolverInterface for Solver<Cb> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Copy, Clone)]
 pub struct CheckPoint {
     trail_len: u32,
     clause_num: u32,
@@ -508,6 +508,13 @@ impl<Cb: Callbacks> Solver<Cb> {
             next_var: self.v.next_var,
             ok: self.v.ok.is_none(),
         }
+    }
+
+    pub fn restore_checkpoint_keep_lits(&mut self, check_point: CheckPoint) {
+        self.restore_checkpoint(CheckPoint {
+            next_var: self.v.next_var,
+            ..check_point
+        })
     }
 
     pub fn restore_checkpoint(&mut self, check_point: CheckPoint) {

@@ -2132,6 +2132,9 @@ impl SolverV {
     fn detach_clause(&mut self, cr: CRef, strict: bool) {
         let (c0, c1, csize, clearnt) = {
             let c = self.ca.get_ref(cr);
+            if c.lits().len() < 2 {
+                return;
+            }
             (c[0], c[1], c.size(), c.learnt())
         };
         debug_assert!(csize > 1);

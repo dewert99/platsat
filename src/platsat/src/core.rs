@@ -51,6 +51,7 @@ use crate::theory;
 ///
 /// A `Solver` object contains the whole state of the SAT solver, including
 /// a clause allocator, literals, clauses, and statistics.
+#[derive(Clone)]
 pub struct Solver<Cb: Callbacks> {
     /// If problem is unsatisfiable (possibly under assumptions),
     /// this literal can be analyzed by `analyze_final`
@@ -65,6 +66,7 @@ pub struct Solver<Cb: Callbacks> {
 }
 
 /// The current assignments.
+#[derive(Clone)]
 struct VarState {
     /// A heuristic measurement of the activity of a variable.
     activity: VMap<f32>,
@@ -83,6 +85,7 @@ struct VarState {
     trail_lim: Vec<i32>,
 }
 
+#[derive(Clone)]
 struct SolverV {
     opts: SolverOpts,
     vars: VarState,
@@ -182,7 +185,7 @@ struct SolverV {
 }
 
 /// Enables adding lemmas during explanations
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct ExplainTheoryArg {
     lemma_lits: Vec<Lit>,
     lemma_offsets: Vec<usize>, // contiguous slices in `lemma_lits`

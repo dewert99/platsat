@@ -25,7 +25,7 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::ops;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RegionAllocator<T: Copy> {
     vec: Vec<T>,
     wasted: usize,

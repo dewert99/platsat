@@ -1,3 +1,4 @@
+use crate::alloc::ExpandedRef;
 use crate::clause::CRef;
 use crate::core::ExplainTheoryArg;
 /// Argument passed to the Theory
@@ -51,6 +52,7 @@ pub trait Theory {
         &'a mut self,
         p: Lit,
         st: &'a mut ExplainTheoryArg,
+        marker: u8,
     ) -> &'a [Lit];
 
     /// Similar to `explain_propagation_clause` but theories should prefer larger older explanations
@@ -64,8 +66,9 @@ pub trait Theory {
         &'a mut self,
         p: Lit,
         st: &'a mut ExplainTheoryArg,
+        marker: u8,
     ) -> &'a [Lit] {
-        self.explain_propagation_clause(p, st)
+        self.explain_propagation_clause(p, st, marker)
     }
 
     /// Called when new clauses are discovered, either is learned by CDCL, or a unit clause that
@@ -88,20 +91,28 @@ pub struct ClauseRef(pub(crate) CRef);
 
 impl Debug for ClauseRef {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        if *self == ClauseRef::UNDEF {
-            write!(f, "crUNDEF")
-        } else if *self == ClauseRef::SPECIAL {
-            write!(f, "crSPECIAL")
-        } else {
-            let u32_val: u32 = must_cast(*self);
-            write!(f, "cr{u32_val}")
+        match self.0.expand() {
+            ExpandedRef::Undef => write!(f, "crUNDEF"),
+            ExpandedRef::Special(maker) => write!(f, "crSPECIAL{}", maker),
+            ExpandedRef::Normal(val) => write!(f, "cr{}", must_cast::<_, u32>(val)),
         }
     }
 }
 
 impl ClauseRef {
     pub const UNDEF: ClauseRef = ClauseRef(CRef::UNDEF);
-    pub const SPECIAL: ClauseRef = ClauseRef(CRef::SPECIAL);
+    pub const fn special(marker: u8) -> ClauseRef {
+        ClauseRef(CRef::special(marker))
+    }
+
+    #[inline]
+    pub fn expand(self) -> ExpandedRef<Self> {
+        match self.0.expand() {
+            ExpandedRef::Undef => ExpandedRef::Undef,
+            ExpandedRef::Special(marker) => ExpandedRef::Special(marker),
+            ExpandedRef::Normal(_) => ExpandedRef::Normal(self),
+        }
+    }
 }
 
 /// Trivial theory that does nothing
@@ -133,7 +144,7 @@ impl Theory for EmptyTheory {
     fn n_levels(&self) -> usize {
         self.0
     }
-    fn explain_propagation_clause(&mut self, _p: Lit, _: &mut ExplainTheoryArg) -> &[Lit] {
+    fn explain_propagation_clause(&mut self, _p: Lit, _: &mut ExplainTheoryArg, _: u8) -> &[Lit] {
         unreachable!()
     }
 }

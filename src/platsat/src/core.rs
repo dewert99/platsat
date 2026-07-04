@@ -18,10 +18,17 @@ NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FO
 DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT
 OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 **************************************************************************************************/
+use crate::alloc::ExpandedRef;
+#[cfg(feature = "logging")]
+use crate::clause::display::Print;
+use crate::clause::VMapBool;
+use crate::core::utils::LubyIter;
+use crate::theory;
 use bytemuck::cast_vec;
 use core::convert::Infallible;
 use core::fmt::{Debug, Formatter};
 use core::ops::ControlFlow;
+use core::panic;
 use default_vec2::ConstDefault;
 use internal_iterator::InternalIterator;
 use no_std_compat::prelude::v1::*;
@@ -36,12 +43,6 @@ use {
     crate::theory::Theory,
     std::{cmp, mem},
 };
-
-#[cfg(feature = "logging")]
-use crate::clause::display::Print;
-use crate::clause::VMapBool;
-use crate::core::utils::LubyIter;
-use crate::theory;
 
 /// The main solver structure.
 ///
@@ -461,12 +462,15 @@ impl<Cb: Callbacks> SolverInterface for Solver<Cb> {
         self.v.has_propagated = false;
         let mut th_arg = { TheoryArg { v: &mut self.v } };
         f(&mut th_arg);
-        if let TheoryConflict::Clause { costly } = self.v.conflict {
-            self.v.ok = Some(Conflict::ThLemma { add: costly });
+        if let TheoryConflict::Clause { costly, marker } = self.v.conflict {
+            self.v.ok = Some(Conflict::ThLemma {
+                add: costly,
+                marker,
+            });
             return;
-        } else if let TheoryConflict::Prop(p) = self.v.conflict {
+        } else if let TheoryConflict::Prop(p, marker) = self.v.conflict {
             debug!("inconsistent theory propagation {:?}", p);
-            self.v.ok = Some(Conflict::ThProp(p));
+            self.v.ok = Some(Conflict::ThProp(p, marker));
             return;
         } else {
             debug_assert!(matches!(self.v.conflict, TheoryConflict::Nil));
@@ -576,13 +580,13 @@ impl<Cb: Callbacks> Solver<Cb> {
                     self.v.ca.get_ref(c).lits()
                 }
             }
-            Conflict::ThLemma { .. } => {
-                th.on_final_lit_explanation(Lit::UNDEF, theory::ClauseRef::SPECIAL);
+            Conflict::ThLemma { marker, .. } => {
+                th.on_final_lit_explanation(Lit::UNDEF, theory::ClauseRef::special(marker));
                 &self.v.th_st.tmp_c_th
             }
-            Conflict::ThProp(l) => {
-                th.on_final_lit_explanation(Lit::UNDEF, theory::ClauseRef::SPECIAL);
-                th.explain_propagation_clause_final(l, &mut self.v.th_st)
+            Conflict::ThProp(l, marker) => {
+                th.on_final_lit_explanation(Lit::UNDEF, theory::ClauseRef::special(marker));
+                th.explain_propagation_clause_final(l, &mut self.v.th_st, marker)
             }
         };
         for &p in lits {
@@ -970,18 +974,21 @@ impl<Cb: Callbacks> Solver<Cb> {
             false => th.partial_check(&mut th_arg),
             true => th.final_check(&mut th_arg),
         }
-        if let TheoryConflict::Clause { costly } = self.v.conflict {
+        if let TheoryConflict::Clause { costly, marker } = self.v.conflict {
             debug!(
                 "theory conflict {:?} (costly: {})",
                 &self.v.th_st.tmp_c_th, costly
             );
             self.v.vars.sort_clause_lits(&mut self.v.th_st.tmp_c_th); // as if it were a normal clause
             self.v.th_st.tmp_c_th.dedup();
-            Err(Conflict::ThLemma { add: costly })
-        } else if let TheoryConflict::Prop(p) = self.v.conflict {
+            Err(Conflict::ThLemma {
+                add: costly,
+                marker,
+            })
+        } else if let TheoryConflict::Prop(p, marker) = self.v.conflict {
             // conflict: propagation of a lit known to be false
             debug!("inconsistent theory propagation {:?}", p);
-            Err(Conflict::ThProp(p))
+            Err(Conflict::ThProp(p, marker))
         } else {
             debug_assert!(matches!(self.v.conflict, TheoryConflict::Nil));
 
@@ -1272,8 +1279,8 @@ impl<Cb: Callbacks> Solver<Cb> {
 #[derive(Copy, Clone)]
 enum TheoryConflict {
     Nil,
-    Clause { costly: bool },
-    Prop(Lit),
+    Clause { costly: bool, marker: u8 },
+    Prop(Lit, u8),
 }
 
 /// The temporary theory argument, passed to the theory.
@@ -1294,9 +1301,9 @@ struct LearntClause<'a> {
 
 #[derive(Clone, Copy, Debug)]
 enum Conflict {
-    BCP(CRef),             // boolean propagation conflict
-    ThLemma { add: bool }, // clause in in v.th_st.tmp_c_th
-    ThProp(Lit),           // literal was propagated, but is false
+    BCP(CRef),                         // boolean propagation conflict
+    ThLemma { add: bool, marker: u8 }, // clause in in v.th_st.tmp_c_th
+    ThProp(Lit, u8),                   // literal was propagated, but is false
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1353,7 +1360,7 @@ impl SolverV {
         &self.th_st.assumptions
     }
 
-    fn order_heap(&mut self) -> Heap<Var, VarOrder> {
+    fn order_heap(&mut self) -> Heap<'_, Var, VarOrder<'_>> {
         self.vars.order_heap()
     }
 
@@ -1441,7 +1448,7 @@ impl SolverV {
         }
     }
 
-    fn watches(&mut self) -> OccLists<Lit, Watcher, WatcherDeleted> {
+    fn watches(&mut self) -> OccLists<'_, Lit, Watcher, WatcherDeleted<'_>> {
         self.watches_data.promote(WatcherDeleted { ca: &self.ca })
     }
 
@@ -1519,7 +1526,7 @@ impl SolverV {
 
         // at what level did the conflict happen?
         let conflict_level = match orig {
-            Conflict::BCP(_) | Conflict::ThProp(_) => {
+            Conflict::BCP(_) | Conflict::ThProp(_, _) => {
                 self.decision_level() as i32 // current level
             }
             Conflict::ThLemma { add, .. } => {
@@ -1572,10 +1579,10 @@ impl SolverV {
             // obtain literals to resolve with, as well as a flag indicating
             let lits = match cur_clause {
                 ResolveWith::Init(Conflict::ThLemma { .. }) => &self.th_st.tmp_c_th,
-                ResolveWith::Init(Conflict::ThProp(lit)) => {
+                ResolveWith::Init(Conflict::ThProp(lit, marker)) => {
                     // theory propagation, ask the theory to justify `lit` with Γ.
                     // The initial conflict is `Γ => lit`, which is false in current trail.
-                    let lits = th.explain_propagation_clause(lit, &mut self.th_st);
+                    let lits = th.explain_propagation_clause(lit, &mut self.th_st, marker);
                     debug_assert_eq!(lits[0], lit);
                     debug_assert!({
                         let vars = &self.vars;
@@ -1593,38 +1600,41 @@ impl SolverV {
 
                     c.lits()
                 }
-                ResolveWith::Resolve(lit, cr) if cr == CRef::SPECIAL => {
-                    // theory propagation, ask the theory to justify `lit`
-                    let lits = th.explain_propagation_clause(lit, &mut self.th_st);
-                    debug_assert_eq!(lits[0], lit);
-                    let lits = &lits[1..];
-                    debug_assert!(lits.iter().all(|&q| self.vars.value_lit(q) == lbool::FALSE));
-                    lits
-                }
-                ResolveWith::Resolve(_lit, cr) if cr == CRef::UNDEF => {
-                    // should have `path_c==0`
-                    panic!(
-                        "analyze: reached a decision literal {:?}, path_c={}",
-                        _lit, path_c
-                    );
-                }
-                ResolveWith::Resolve(lit, cr) => {
-                    // bump activity if `cr` is a learnt clause
-                    let mut c = self.ca.get_ref(cr);
-                    if c.learnt() {
-                        self.cla_bump_activity(cr);
-                        c = self.ca.get_ref(cr); // re-borrow
+                ResolveWith::Resolve(lit, cr) => match cr.expand() {
+                    ExpandedRef::Special(maker) => {
+                        let lits = th.explain_propagation_clause(lit, &mut self.th_st, maker);
+                        debug_assert_eq!(lits[0], lit);
+                        let lits = &lits[1..];
+                        debug_assert!(
+                            lits.iter().all(|&q| self.vars.value_lit(q) == lbool::FALSE),
+                            "Explaination {lits:?} includes non false lits"
+                        );
+                        lits
                     }
+                    ExpandedRef::Undef => {
+                        panic!(
+                            "analyze: reached a decision literal {:?}, path_c={}",
+                            lit, path_c
+                        );
+                    }
+                    ExpandedRef::Normal(cr) => {
+                        // bump activity if `cr` is a learnt clause
+                        let mut c = self.ca.get_ref(cr);
+                        if c.learnt() {
+                            self.cla_bump_activity(cr);
+                            c = self.ca.get_ref(cr); // re-borrow
+                        }
 
-                    let lits = c.lits();
+                        let lits = c.lits();
 
-                    // we are resolving the initial conflict against `c`,
-                    // which should be the clause which propagated `p`,
-                    // so we skip its first literal (`p`) since
-                    // it can't appear in the learnt clause
-                    debug_assert_eq!(lit.var(), lits[0].var());
-                    &lits[1..]
-                }
+                        // we are resolving the initial conflict against `c`,
+                        // which should be the clause which propagated `p`,
+                        // so we skip its first literal (`p`) since
+                        // it can't appear in the learnt clause
+                        debug_assert_eq!(lit.var(), lits[0].var());
+                        &lits[1..]
+                    }
+                },
             };
             trace!(
                 "analyze.resolve-with {:?} ((p: {:?}, path_c: {}, from {:?})",
@@ -1736,7 +1746,7 @@ impl SolverV {
             .iter()
             .all(|&l| self.value_lit(l) == lbool::FALSE));
         match orig {
-            Conflict::ThLemma { add: true } => self.th_st.dedup_last_lemma(&out_learnt),
+            Conflict::ThLemma { add: true, .. } => self.th_st.dedup_last_lemma(&out_learnt),
             _ => {}
         }
         LearntClause {
@@ -1781,7 +1791,7 @@ impl SolverV {
                 let reason = self.reason(x);
 
                 let mut retain = true;
-                if reason == CRef::UNDEF || reason == CRef::SPECIAL {
+                if !reason.is_normal() {
                     debug_assert!(self.level(x) > 0);
                     retain = true;
                 } else {
@@ -1849,18 +1859,23 @@ impl SolverV {
             if self.seen[x].is_seen() {
                 let reason = self.reason(x);
                 th.on_final_lit_explanation(lit, theory::ClauseRef(reason));
-                let lits = if reason == CRef::UNDEF {
-                    debug_assert!(self.level(x) > level_lim);
-                    f(!lit)?;
-                    &[]
-                } else if reason == CRef::SPECIAL {
-                    // resolution with propagation reason
-                    let lits = th.explain_propagation_clause_final(lit, &mut self.th_st);
-                    debug_assert_eq!(lits[0], lit);
-                    &lits[1..]
-                } else {
-                    let c = self.ca.get_ref(reason);
-                    &c.lits()[1..]
+                let lits = match reason.expand() {
+                    ExpandedRef::Undef => {
+                        debug_assert!(self.level(x) > level_lim);
+                        f(!lit)?;
+                        &[]
+                    }
+                    ExpandedRef::Special(marker) => {
+                        // resolution with propagation reason
+                        let lits =
+                            th.explain_propagation_clause_final(lit, &mut self.th_st, marker);
+                        debug_assert_eq!(lits[0], lit);
+                        &lits[1..]
+                    }
+                    ExpandedRef::Normal(reason) => {
+                        let c = self.ca.get_ref(reason);
+                        &c.lits()[1..]
+                    }
                 };
                 for &p in lits {
                     if self.vars.level(p.var()) > level_lim {
@@ -1891,7 +1906,7 @@ impl SolverV {
             self.minimize_stack.pop();
 
             // special case: theory propagation
-            if cr == CRef::SPECIAL {
+            if !cr.is_normal() {
                 if self.vars.level(q.var()) == 0 {
                     continue; // level 0, just continue
                 } else {
@@ -2068,7 +2083,7 @@ impl SolverV {
             // Note: it is not safe to call `locked()` on a relocated clause. This is why we keep
             // `dangling` reasons here. It is safe and does not hurt.
             let reason = self.reason(v);
-            if reason != CRef::UNDEF && reason != CRef::SPECIAL {
+            if reason.is_normal() {
                 let cond = {
                     let c = self.ca.get_ref(reason);
                     c.reloced() || self.locked(c)
@@ -2205,10 +2220,7 @@ impl SolverV {
     /// Returns `true` if a clause is a reason for some implication in the current state.
     fn locked(&self, c: ClauseRef) -> bool {
         let reason = self.reason(c[0].var());
-        self.value_lit(c[0]) == lbool::TRUE
-            && reason != CRef::UNDEF
-            && reason != CRef::SPECIAL
-            && self.ca.get_ref(reason) == c
+        self.value_lit(c[0]) == lbool::TRUE && reason.is_normal() && self.ca.get_ref(reason) == c
     }
     // inline bool     Solver::locked          (const Clause& c) const { return value(c[0]) == l_True && reason(var(c[0])) != CRef_Undef && ca.lea(reason(var(c[0]))) == &c; }
 
@@ -2411,7 +2423,7 @@ impl VarState {
         self.trail.push(p);
     }
 
-    fn order_heap(&mut self) -> Heap<Var, VarOrder> {
+    fn order_heap(&mut self) -> Heap<'_, Var, VarOrder<'_>> {
         self.order_heap_data.promote(VarOrder {
             activity: &self.activity,
         })
@@ -2476,7 +2488,7 @@ impl<'a> TheoryArg<'a> {
     pub fn is_ok(&self) -> bool {
         match self.v.conflict {
             TheoryConflict::Nil => true,
-            TheoryConflict::Prop(_) | TheoryConflict::Clause { .. } => false,
+            TheoryConflict::Prop(_, _) | TheoryConflict::Clause { .. } => false,
         }
     }
 
@@ -2584,6 +2596,12 @@ impl<'a> TheoryArg<'a> {
     /// If this returns `false`, the theory should avoid doing more work and
     /// return as early as reasonably possible.
     pub fn propagate(&mut self, p: Lit) -> bool {
+        self.propagate_with_marker(p, 0)
+    }
+
+    /// Like [`propagate`](TheoryArg::propagate) but allows passing a marker when will be passed to
+    /// [`Theory::explain_propagation_clause`] or [`Theory::explain_propagation_clause_final`]
+    pub fn propagate_with_marker(&mut self, p: Lit, marker: u8) -> bool {
         if !self.is_ok() {
             return false;
         }
@@ -2593,13 +2611,13 @@ impl<'a> TheoryArg<'a> {
         } else if v_p == lbool::UNDEF {
             // propagate on the fly
             self.v.has_propagated = true;
-            let cr = CRef::SPECIAL; // indicates a theory propagation
+            let cr = CRef::special(marker); // indicates a theory propagation
             self.v.vars.unchecked_enqueue(p, cr);
             true
         } else {
             assert_eq!(v_p, lbool::FALSE);
             // conflict
-            self.v.conflict = TheoryConflict::Prop(p);
+            self.v.conflict = TheoryConflict::Prop(p, marker);
             false
         }
     }
@@ -2618,8 +2636,12 @@ impl<'a> TheoryArg<'a> {
     ///     This is a hint for the SAT solver to keep the theory lemma that corresponds
     ///     to `c` along with the actual learnt clause.
     pub fn raise_conflict(&mut self, lits: &[Lit], costly: bool) {
+        self.raise_conflict_with_marker(lits, costly, 0)
+    }
+
+    pub fn raise_conflict_with_marker(&mut self, lits: &[Lit], costly: bool, marker: u8) {
         if self.is_ok() {
-            self.v.conflict = TheoryConflict::Clause { costly };
+            self.v.conflict = TheoryConflict::Clause { costly, marker };
             self.v.th_st.tmp_c_th.clear();
             self.v.th_st.tmp_c_th.extend_from_slice(lits);
         }
@@ -2637,11 +2659,16 @@ impl<'a> TheoryArg<'a> {
     /// - `costly` if true, indicates that the conflict `c` was costly to produce.
     ///     This is a hint for the SAT solver to keep the theory lemma that corresponds
     ///     to `c` along with the actual learnt clause.
+
     pub fn raise_conflict_using_builder(&mut self, costly: bool) {
-        self.v.conflict = TheoryConflict::Clause { costly };
+        self.raise_conflict_using_builder_with_marker(costly, 0)
     }
 
-    pub fn reborrow(&mut self) -> TheoryArg {
+    pub fn raise_conflict_using_builder_with_marker(&mut self, costly: bool, marker: u8) {
+        self.v.conflict = TheoryConflict::Clause { costly, marker };
+    }
+
+    pub fn reborrow(&mut self) -> TheoryArg<'_> {
         TheoryArg { v: &mut *self.v }
     }
 

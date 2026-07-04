@@ -367,7 +367,7 @@ impl sat::Theory for Solver0 {
         self.return_res(arg)
     }
 
-    fn explain_propagation_clause(&mut self, p: BLit, _: &mut ExplainTheoryArg) -> &[BLit] {
+    fn explain_propagation_clause(&mut self, p: BLit, _: &mut ExplainTheoryArg, _: u8) -> &[BLit] {
         assert!(self.propagate);
         let ((line, col), _n) = *self.lm.lit_to_pred.get_mut(p.var());
 

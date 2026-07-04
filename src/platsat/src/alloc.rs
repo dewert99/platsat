@@ -19,6 +19,7 @@ OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWA
 **************************************************************************************************/
 use bytemuck::{Pod, Zeroable};
 use core::hash::{Hash, Hasher};
+use core::panic;
 use no_std_compat::prelude::v1::*;
 use std::cmp;
 use std::fmt;
@@ -47,7 +48,7 @@ impl<T: Copy + Default> RegionAllocator<T> {
     pub fn alloc(&mut self, size: u32) -> Ref<T> {
         debug_assert!(size > 0);
         let r = Ref(self.vec.len() as u32, PhantomData);
-        if r >= Ref::SPECIAL {
+        if r >= Ref::special(0) {
             panic!("allocator: max capacity reached");
         }
         self.vec.extend((0..size).map(|_| T::default()));
@@ -93,8 +94,8 @@ impl<T: Copy> fmt::Debug for Ref<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         if self == &Ref::UNDEF {
             write!(f, "UNDEF")
-        } else if self == &Ref::SPECIAL {
-            write!(f, "SPECIAL")
+        } else if self.0 >= (!0u32 ^ u8::MAX as u32) {
+            f.debug_tuple("Special").field(&(self.0 as u8)).finish()
         } else {
             f.debug_tuple("Ref").field(&self.0).finish()
         }
@@ -124,9 +125,32 @@ impl<T: Copy> Default for Ref<T> {
     }
 }
 
+pub enum ExpandedRef<T> {
+    Undef,
+    Special(u8),
+    Normal(T),
+}
+
 impl<T: Copy> Ref<T> {
     pub const UNDEF: Self = Ref(!0, PhantomData);
-    pub const SPECIAL: Self = Ref((!0) - 1, PhantomData);
+    pub const fn special(x: u8) -> Self {
+        debug_assert!(x != u8::MAX);
+        Ref((!0u32 ^ u8::MAX as u32) | x as u32, PhantomData)
+    }
+
+    pub fn expand(self) -> ExpandedRef<Self> {
+        if self == Ref::UNDEF {
+            ExpandedRef::Undef
+        } else if self.0 >= (!0u32 ^ u8::MAX as u32) {
+            ExpandedRef::Special(self.0 as u8)
+        } else {
+            ExpandedRef::Normal(self)
+        }
+    }
+
+    pub fn is_normal(self) -> bool {
+        self.0 < (!0u32 ^ u8::MAX as u32)
+    }
 }
 
 impl<T: Copy> ops::Add<u32> for Ref<T> {

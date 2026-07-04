@@ -62,7 +62,10 @@ impl<K: AsIndex, V> HeapData<K, V> {
         self.indices[k].0 >= 0
     }
 
-    pub fn promote<Comp: CachedKeyComparator<K, Key = V>>(&mut self, comp: Comp) -> Heap<K, Comp> {
+    pub fn promote<Comp: CachedKeyComparator<K, Key = V>>(
+        &mut self,
+        comp: Comp,
+    ) -> Heap<'_, K, Comp> {
         Heap { data: self, comp }
     }
 
